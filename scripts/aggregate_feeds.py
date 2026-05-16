@@ -9,6 +9,9 @@ from datetime import datetime, timezone
 FEEDS_DIR = "feeds"
 OUTPUT_FILE = "output/geofeed.csv"
 
+# Country codes that will be excluded from the aggregated output
+BLOCKED_COUNTRIES = {"KP", "AQ"}
+
 def load_previous_state():
     state = {}
     if not os.path.exists(OUTPUT_FILE):
@@ -82,7 +85,21 @@ def aggregate():
                     if not line or line.startswith("#"):
                         continue
                     parts = line.split(",")
-                    if len(parts) >= 1:
+                    if len(parts) >= 2:
+                        prefix = parts[0].strip()
+                        country = parts[1].strip().upper()
+                        if country in BLOCKED_COUNTRIES:
+                            print(f"Skipping blocked country {country} for prefix {prefix} in {url}")
+                            continue
+                        try:
+                            net = ipaddress.ip_network(prefix, strict=False)
+                            if net not in seen_prefixes:
+                                seen_prefixes.add(net)
+                                valid_lines.append(line)
+                                count += 1
+                        except ValueError:
+                            print(f"Invalid prefix {prefix} in {url}")
+                    elif len(parts) == 1:
                         prefix = parts[0].strip()
                         try:
                             net = ipaddress.ip_network(prefix, strict=False)

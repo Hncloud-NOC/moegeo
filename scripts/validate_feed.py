@@ -7,6 +7,9 @@ import re
 import csv
 from collections import OrderedDict
 
+# Country codes that will be excluded from aggregation
+BLOCKED_COUNTRIES = {"KP", "AQ"}
+
 def check_rdap_email(asn, target_email):
     try:
         asn_num = str(asn).upper().replace("AS", "")
@@ -44,6 +47,7 @@ def check_rdap_email(asn, target_email):
 
 def validate_file(filepath, author_email=None, is_signed=False):
     errors = []
+    warnings = []
     messages = []
     
     if not filepath.endswith(".yml"):
@@ -100,8 +104,13 @@ def validate_file(filepath, author_email=None, is_signed=False):
                         has_valid_entry = True
                     except ValueError:
                         errors.append(f"无效的 IP 前缀 / Invalid IP prefix '{prefix}' in {url} at valid row {row_num}")
-                        
+
                     country = parts[1].strip()
+                    if country and country.upper() in BLOCKED_COUNTRIES:
+                        warnings.append(
+                            f"⚠️ 前缀 {prefix} 使用了受限国家代码 '{country}'，该条目将不会被汇总到聚合输出中。"
+                            f" / Prefix {prefix} uses blocked country code '{country}', this entry will be excluded from aggregation."
+                        )
                     if country and not re.match(r"^[A-Z]{2}$", country):
                         errors.append(f"无效的国家代码 (应为2位全大写英文字母) / Invalid country code '{country}' in {url} at valid row {row_num}")
                         
@@ -131,7 +140,7 @@ def validate_file(filepath, author_email=None, is_signed=False):
     else:
         messages.append("⚠️ 提交未进行 GPG 签名或未获取到邮箱，跳过自动化归属权验证。需要管理员人工审核。 / Commit not signed or missing email, skipping automated ownership verification.")
 
-    return errors, messages
+    return errors, warnings, messages
 
 def _error_category(error_msg):
     """Extract a category key from an error message by removing row-specific details."""
@@ -174,11 +183,16 @@ if __name__ == "__main__":
     is_signed_str = sys.argv[3] if len(sys.argv) > 3 else "false"
     is_signed = is_signed_str.lower() == "true"
     
-    errors, messages = validate_file(filepath, author_email, is_signed)
+    errors, warnings, messages = validate_file(filepath, author_email, is_signed)
     
     for m in messages:
         print(m)
-        
+
+    if warnings:
+        print(f"\n⚠️ 警告 / Warnings ({len(warnings)}):")
+        for w in warnings:
+            print(f"  {w}")
+
     if errors:
         print(f"\n❌ 校验失败 / Validation Failed (共 {len(errors)} 个错误 / {len(errors)} errors):")
         for line in format_errors(errors):
