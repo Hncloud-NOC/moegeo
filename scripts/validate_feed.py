@@ -10,7 +10,7 @@ from collections import OrderedDict
 def check_rdap_email(asn, target_email):
     try:
         asn_num = str(asn).upper().replace("AS", "")
-        # Try multiple RDAP bootstraps just in case
+        # Query each RIR's RDAP server directly (covers all ASNs globally)
         urls = [
             f"https://rdap.db.ripe.net/autnum/{asn_num}",
             f"https://rdap.arin.net/registry/autnum/{asn_num}",
@@ -21,28 +21,19 @@ def check_rdap_email(asn, target_email):
         
         emails = []
         for url in urls:
-            resp = requests.get(url, timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                for entity in data.get('entities', []):
-                    vcard = entity.get('vcardArray', [])
-                    if len(vcard) > 1:
-                        for item in vcard[1]:
-                            if item[0] == 'email':
-                                emails.append(item[3].lower())
-                break # Found the registry, stop querying others
-                
-        if not emails:
-            # Fallback to rdap.org
-            resp = requests.get(f"https://rdap.org/autnum/{asn_num}", timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                for entity in data.get('entities', []):
-                    vcard = entity.get('vcardArray', [])
-                    if len(vcard) > 1:
-                        for item in vcard[1]:
-                            if item[0] == 'email':
-                                emails.append(item[3].lower())
+            try:
+                resp = requests.get(url, timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for entity in data.get('entities', []):
+                        vcard = entity.get('vcardArray', [])
+                        if len(vcard) > 1:
+                            for item in vcard[1]:
+                                if item[0] == 'email':
+                                    emails.append(item[3].lower())
+                    break  # Found the registry, stop querying others
+            except requests.exceptions.RequestException:
+                continue  # This RIR timed out or errored, try the next one
                                 
         if target_email.lower() in emails:
             return True, emails

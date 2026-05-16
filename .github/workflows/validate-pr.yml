@@ -29,13 +29,23 @@ jobs:
       - name: Get changed files
         id: changed-files
         run: |
-          # Fetch base branch for diff comparison
-          git fetch origin ${{ github.event.pull_request.base.sha }}
-          # Only check for new or modified .yml files in feeds/ directory
-          FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep '^feeds/.*\.yml$' || true)
-          # Replace newlines with spaces
-          FILES_SPACE=$(echo "$FILES" | tr '\n' ' ')
-          echo "files=$FILES_SPACE" >> $GITHUB_OUTPUT
+          # Fetch base branch for comparison
+          git fetch origin ${{ github.event.pull_request.base.ref }}
+          BASE_SHA=${{ github.event.pull_request.base.sha }}
+          HEAD_SHA=${{ github.event.pull_request.head.sha }}
+
+          # Categorize changes by type
+          ADDED=$(git diff --name-only --diff-filter=A $BASE_SHA $HEAD_SHA | grep '^feeds/.*\.yml$' || true)
+          MODIFIED=$(git diff --name-only --diff-filter=M $BASE_SHA $HEAD_SHA | grep '^feeds/.*\.yml$' || true)
+          DELETED=$(git diff --name-only --diff-filter=D $BASE_SHA $HEAD_SHA | grep '^feeds/.*\.yml$' || true)
+
+          echo "added=$(echo "$ADDED" | tr '\n' ' ')" >> $GITHUB_OUTPUT
+          echo "modified=$(echo "$MODIFIED" | tr '\n' ' ')" >> $GITHUB_OUTPUT
+          echo "deleted=$(echo "$DELETED" | tr '\n' ' ')" >> $GITHUB_OUTPUT
+
+          # All files needing content validation (added + modified)
+          ALL_FILES=$(echo -e "${ADDED}\n${MODIFIED}" | grep -v '^$' | tr '\n' ' ' || true)
+          echo "files=$ALL_FILES" >> $GITHUB_OUTPUT
 
       - name: Check Commit Signature and Email
         id: commit-info
@@ -45,34 +55,79 @@ jobs:
           RES=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" $API_URL)
           VERIFIED=$(echo "$RES" | jq -r '.commit.verification.verified // false')
           COMMIT_EMAIL=$(echo "$RES" | jq -r '.commit.author.email // "null"')
-          
+
           echo "verified=$VERIFIED" >> $GITHUB_OUTPUT
           echo "email=$COMMIT_EMAIL" >> $GITHUB_OUTPUT
 
+      - name: Security Check
+        id: security
+        if: always()
+        run: |
+          MODIFIED="${{ steps.changed-files.outputs.modified }}"
+          DELETED="${{ steps.changed-files.outputs.deleted }}"
+          EMAIL="${{ steps.commit-info.outputs.email }}"
+          BASE_SHA=${{ github.event.pull_request.base.sha }}
+
+          # Build arguments
+          ARGS="--base-sha $BASE_SHA"
+          if [ -n "$EMAIL" ] && [ "$EMAIL" != "null" ]; then
+            ARGS="$ARGS --author-email $EMAIL"
+          fi
+
+          HAS_FILES=false
+          if [ -n "$MODIFIED" ] && [ "$MODIFIED" != " " ]; then
+            ARGS="$ARGS --modified $MODIFIED"
+            HAS_FILES=true
+          fi
+          if [ -n "$DELETED" ] && [ "$DELETED" != " " ]; then
+            ARGS="$ARGS --deleted $DELETED"
+            HAS_FILES=true
+          fi
+
+          if [ "$HAS_FILES" = false ]; then
+            echo "No modified or deleted files, skipping security check."
+            echo "result=skip" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          EXIT_CODE=0
+          OUTPUT=$(python scripts/check_pr_security.py $ARGS 2>&1) || EXIT_CODE=$?
+
+          echo "comment<<EOF" >> $GITHUB_OUTPUT
+          echo "$OUTPUT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "result=fail" >> $GITHUB_OUTPUT
+          else
+            echo "result=pass" >> $GITHUB_OUTPUT
+          fi
+
       - name: Run Validation
         id: validation
+        if: always()
         run: |
           FILES="${{ steps.changed-files.outputs.files }}"
           if [ -z "$FILES" ] || [ "$FILES" = " " ]; then
             echo "No feed files to validate."
             exit 0
           fi
-          
+
           VERIFIED="${{ steps.commit-info.outputs.verified }}"
           EMAIL="${{ steps.commit-info.outputs.email }}"
-          
+
           ALL_PASSED=true
           COMMENTS=""
-          
+
           for file in $FILES; do
             if [ ! -f "$file" ]; then
-                continue # Skip deleted files
+                continue
             fi
-            
+
             echo "Validating $file..."
             EXIT_CODE=0
             OUTPUT=$(python scripts/validate_feed.py "$file" "$EMAIL" "$VERIFIED" 2>&1) || EXIT_CODE=$?
-            
+
             COMMENTS="${COMMENTS}\n\n### Validation for \`$file\`\n"
             if [ $EXIT_CODE -eq 0 ]; then
               COMMENTS="${COMMENTS}✅ **Passed**\n\`\`\`\n${OUTPUT}\n\`\`\`"
@@ -81,28 +136,62 @@ jobs:
               ALL_PASSED=false
             fi
           done
-          
-          # Write EOF safe block
+
           echo "comment<<EOF" >> $GITHUB_OUTPUT
           echo -e "$COMMENTS" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
-          
+
           if [ "$ALL_PASSED" = false ]; then
-            echo "Validation failed for one or more files."
-            exit 1
+            echo "result=fail" >> $GITHUB_OUTPUT
+          else
+            echo "result=pass" >> $GITHUB_OUTPUT
           fi
 
       - name: Comment on PR
-        if: always() && steps.validation.outputs.comment != ''
+        if: always() && (steps.security.outputs.comment != '' || steps.validation.outputs.comment != '')
         uses: actions/github-script@v7
         env:
-          PR_COMMENT: ${{ steps.validation.outputs.comment }}
+          SECURITY_COMMENT: ${{ steps.security.outputs.comment }}
+          SECURITY_RESULT: ${{ steps.security.outputs.result }}
+          VALIDATION_COMMENT: ${{ steps.validation.outputs.comment }}
         with:
           script: |
-            const comment = process.env.PR_COMMENT;
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: comment
-            });
+            let body = '';
+
+            const security = process.env.SECURITY_COMMENT;
+            const securityResult = process.env.SECURITY_RESULT;
+            const validation = process.env.VALIDATION_COMMENT;
+
+            if (security) {
+              const icon = securityResult === 'fail' ? '🚨' : '✅';
+              body += `## ${icon} Security Check\n\`\`\`\n${security}\n\`\`\`\n\n`;
+            }
+
+            if (validation) {
+              body += `## 📋 Validation Results\n${validation}`;
+            }
+
+            if (body) {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: body
+              });
+            }
+
+      - name: Fail if checks did not pass
+        if: always()
+        run: |
+          SECURITY="${{ steps.security.outputs.result }}"
+          VALIDATION="${{ steps.validation.outputs.result }}"
+
+          if [ "$SECURITY" = "fail" ]; then
+            echo "::error::Security check failed!"
+            exit 1
+          fi
+
+          if [ "$VALIDATION" = "fail" ]; then
+            echo "::error::Validation failed!"
+            exit 1
+          fi
