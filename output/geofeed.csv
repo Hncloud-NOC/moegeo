@@ -1,6 +1,6 @@
 # Geofeed Community Aggregation by MoeDove LLC
-# Generated at: 2026-05-30T05:44:42.355135+00:00
-# Total prefixes: 276
+# Generated at: 2026-05-31T06:14:18.442645+00:00
+# Total prefixes: 281
 
 # AS153376 - Jilin Province Brick Business Service Limited - Last change: Thu, 28 May 2026 07:24:37 GMT
 2406:840:e600::/44,CN,CN-JL,Changchun,
@@ -19,6 +19,13 @@
 44.32.191.80/28,CN,CN-JL,Changchun,
 44.32.191.9/32,CN,CN-SH,Shanghai,
 44.32.191.96/27,CN,CN-JL,Changchun,
+
+# AS197817 - Nyco Cloud Network - Last change: Sun, 31 May 2026 03:24:12 GMT
+2a14:ae00:51::/48,HK,,Hong Kong,
+2a14:ae00:52::/48,US,US-CA,Fremont,
+2a14:ae00:53::/48,JP,JP-13,Tokyo,
+2a14:ae00:54::/48,SG,,Singapore,
+2a14:ae00:55::/48,DE,DE-HE,Frankfurt am Main,
 
 # AS200078 - Potat0 Network - Last change: Sun, 01 Feb 2026 06:16:27 GMT
 2a13:b487:1101::/48,CN,CN-SH,Shanghai,
